@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cyber Dither — ASCII Camera Filter</title>
+  <meta name="description" content="Real-time Hexadecimal ASCII Dither camera filter." />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width:100%; height:100%; background:#000; overflow:hidden; font-family:'Courier New',monospace; }
+
+    #ls {
+      position:fixed; inset:0; z-index:9999; background:#000;
+      display:flex; flex-direction:column; align-items:center; justify-content:center; gap:22px;
+      transition:opacity 0.7s ease;
+    }
+    #ls.gone { opacity:0; pointer-events:none; }
+    .lt { font-size:clamp(22px,5vw,46px); color:#00ff41; letter-spacing:.32em;
+          text-shadow:0 0 18px #00ff41,0 0 40px #00ff41; animation:blink 1.6s ease-in-out infinite; }
+    .lb-wrap { width:300px; height:2px; background:rgba(0,255,65,.15); overflow:hidden; }
+    .lb { height:100%; width:0%; background:#00ff41; box-shadow:0 0 10px #00ff41; transition:width .2s ease; }
+    .ls-txt { color:rgba(0,255,65,.55); font-size:11px; letter-spacing:.22em; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+    #po {
+      position:fixed; inset:0; z-index:8000; background:rgba(0,0,0,.97);
+      display:none; flex-direction:column; align-items:center; justify-content:center; gap:22px;
+    }
+    .pt { font-size:24px; color:#00ff41; letter-spacing:.2em; text-shadow:0 0 18px #00ff41; }
+    .pd { color:rgba(0,255,65,.7); font-size:13px; text-align:center; max-width:380px; line-height:1.8; }
+    .pb { padding:11px 36px; background:transparent; border:1px solid #00ff41; color:#00ff41;
+          font-family:'Courier New',monospace; font-size:13px; letter-spacing:.18em;
+          cursor:pointer; text-transform:uppercase; transition:all .2s; }
+    .pb:hover { background:#00ff41; color:#000; box-shadow:0 0 20px #00ff41; }
+
+    #cc { position:fixed; inset:0; }
+    canvas { display:block; width:100%; height:100%; }
+
+    #vid { position:absolute; top:-9999px; left:-9999px; width:1px; height:1px; }
+
+    .lil-gui {
+      --background-color:rgba(0,5,0,.94)!important;
+      --text-color:#00ff41!important;
+      --title-background-color:rgba(0,255,65,.07)!important;
+      --title-text-color:#00ff41!important;
+      --widget-color:rgba(0,255,65,.11)!important;
+      --hover-color:rgba(0,255,65,.2)!important;
+      --focus-color:rgba(0,255,65,.35)!important;
+      --number-color:#00ff41!important;
+      --string-color:#00ff41!important;
+      --font-size:11px!important;
+      --font-family:'Courier New',monospace!important;
+      border:1px solid rgba(0,255,65,.26)!important;
+      backdrop-filter:blur(14px)!important;
+    }
+    .lil-gui.root {
+      position:fixed!important; top:10px!important; right:10px!important;
+      width:248px!important; max-height:calc(100vh - 20px)!important;
+      overflow-y:auto!important; z-index:1000!important;
+    }
+
+    #hud {
+      position:fixed; bottom:12px; left:12px;
+      color:rgba(0,255,65,.45); font-size:10px; letter-spacing:.14em;
+      pointer-events:none; z-index:200; line-height:2;
+    }
+    #hud .m { color:#00ff41; font-size:12px; text-shadow:0 0 8px #00ff41; }
+  </style>
+</head>
+<body>
+
+<div id="ls">
+  <div class="lt">CYBER.SYS</div>
+  <div class="lb-wrap"><div class="lb" id="lb"></div></div>
+  <div class="ls-txt" id="lm">CONNECTING CAM...</div>
+</div>
+
+<div id="po">
+  <div class="pt">// CAMERA REQUIRED</div>
+  <div class="pd">Grant webcam access to apply the filter.<br/>No data is stored or transmitted.</div>
+  <button class="pb" id="pb">GRANT ACCESS</button>
+</div>
+
+<div id="cc"><canvas id="c"></canvas></div>
+<video id="vid" autoplay playsinline muted></video>
+
+<div id="hud">
+  <div class="m" id="hm">MODE: LUMA</div>
+  <div id="hf">FPS: --</div>
+  <div id="hr">RES: --</div>
+</div>
+
+<!-- ═════════════════════════════════════════════════════════════════════════ -->
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://unpkg.com/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass }     from 'three/addons/postprocessing/RenderPass.js';
+import { OutputPass }     from 'three/addons/postprocessing/OutputPass.js';
+import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm';
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const sp = (p,m) => { $('lb').style.width=p+'%'; $('lm').textContent=m; };
+
+// ─── State ───────────────────────────────────────────────────────────────────
+const S = {
+  mode: 0,               // 0: Luma Dither, 1: Motion Dither
+  charSet: 'Hexadecimal',// 'Binary', 'Hexadecimal', 'Custom'
+  customText: 'MATRIX',
+  textColor: '#00ff41',
+  density: 120,          
+  cycleSpeed: 0.1,       
+  contrast: 1.2,
+  brightness: 0.05,
+  ditherStrength: 1.0,
+  invert: false,
+  facingMode: 'user'
+};
+
+// ─── Webcam ───────────────────────────────────────────────────────────────────
+const videoEl = $('vid');
+let vReady=false, vW=1280, vH=720;
+
+async function initCam() {
+  sp(10,'REQUESTING CAMERA...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:1920},height:{ideal:1080},facingMode:S.facingMode}, audio:false
+    });
+    videoEl.srcObject = stream;
+    await new Promise(r => { videoEl.onloadedmetadata=r; });
+    await videoEl.play();
+    vW=videoEl.videoWidth; vH=videoEl.videoHeight;
+    vReady=true; sp(50,'CAMERA ACTIVE');
+  } catch(e) {
+    if ($('po')) $('po').style.display='flex';
+    if ($('pb')) $('pb').addEventListener('click',async()=>{ $('po').style.display='none'; await initCam(); },{once:true});
+  }
+}
+
+async function flipCamera() {
+  if (videoEl.srcObject) {
+    videoEl.srcObject.getTracks().forEach(t => t.stop());
+  }
+  S.facingMode = S.facingMode === 'user' ? 'environment' : 'user';
+  U.u_flip.value = S.facingMode === 'user' ? 1.0 : 0.0;
+  await initCam();
+}
+
+// ─── Canvas 2D STATIC GRID ────────────────────────────────────────────────────
+const mCv = document.createElement('canvas');
+const mCtx = mCv.getContext('2d', { alpha: false });
+
+let W=window.innerWidth, H=window.innerHeight;
+let cols = S.density;
+let rows = 1;
+let fontSz = W / cols;
+
+function getCharPool() {
+  if (S.charSet === 'Binary') return "01";
+  if (S.charSet === 'Hexadecimal') return "0123456789ABCDEF";
+  return S.customText.length > 0 ? S.customText.toUpperCase() : "01";
+}
+
+function randChar() { 
+  const p = getCharPool();
+  return p[Math.floor(Math.random() * p.length)]; 
+}
+
+let grid = [];
+
+function initRainCanvas() {
+  mCv.width = W; 
+  mCv.height = H;
+  cols = S.density;
+  
+  // CRITICAL: DO NOT rounding fontSz. It must exactly match the WebGL grid cell width
+  // to avoid desyncing and splitting characters.
+  fontSz = W / cols;
+  rows = Math.ceil(H / fontSz);
+
+  grid = [];
+  mCtx.fillStyle = '#000';
+  mCtx.fillRect(0, 0, W, H);
+  mCtx.font = `bold ${Math.round(fontSz)}px 'Courier New', monospace`;
+  mCtx.textAlign = 'center';
+  mCtx.textBaseline = 'top';
+
+  for (let c = 0; c < cols; c++) {
+    let colArr = [];
+    for (let r = 0; r < rows; r++) {
+      let ch = randChar();
+      colArr.push(ch);
+      mCtx.fillStyle = S.textColor;
+      // Precise sub-pixel alignment
+      mCtx.fillText(ch, c * fontSz + (fontSz / 2), r * fontSz);
+    }
+    grid.push(colArr);
+  }
+}
+
+let lastCycle = 0;
+function updateRainLogic(now) {
+  if (S.cycleSpeed <= 0) return;
+  if (now - lastCycle < 100) return;
+  lastCycle = now;
+
+  mCtx.font = `bold ${Math.round(fontSz)}px 'Courier New', monospace`;
+  mCtx.textAlign = 'center';
+  mCtx.textBaseline = 'top';
+
+  let totalCellsToUpdate = Math.floor(cols * rows * S.cycleSpeed);
+  for (let i = 0; i < totalCellsToUpdate; i++) {
+    let c = Math.floor(Math.random() * cols);
+    let r = Math.floor(Math.random() * rows);
+    let ch = randChar();
+    
+    mCtx.fillStyle = '#000';
+    // Generous floor/ceil to ensure the old sub-pixel character clears completely
+    mCtx.fillRect(Math.floor(c * fontSz), Math.floor(r * fontSz), Math.ceil(fontSz) + 1, Math.ceil(fontSz) + 1);
+    
+    mCtx.fillStyle = S.textColor;
+    mCtx.fillText(ch, c * fontSz + (fontSz / 2), r * fontSz);
+    
+    grid[c][r] = ch;
+  }
+}
+
+const mTex = new THREE.CanvasTexture(mCv);
+mTex.minFilter = THREE.NearestFilter;
+mTex.magFilter = THREE.NearestFilter;
+
+
+// ─── THREE.js WebGL & PingPong ────────────────────────────────────────────────
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:false});
+renderer.setPixelRatio(window.devicePixelRatio); 
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+const cam   = new THREE.OrthographicCamera(-0.5,0.5,0.5,-0.5,0.01,10);
+cam.position.z=1;
+const geo   = new THREE.PlaneGeometry(1,1);
+
+const vidTex = new THREE.VideoTexture(videoEl);
+vidTex.minFilter=THREE.LinearFilter; vidTex.magFilter=THREE.LinearFilter;
+vidTex.colorSpace=THREE.SRGBColorSpace;
+
+// Ping Pong buffers for motion detection
+let rtA=null, rtB=null, pp=false;
+function mkRT(w,h){
+  return new THREE.WebGLRenderTarget(w,h,{
+    minFilter:THREE.LinearFilter, magFilter:THREE.LinearFilter,
+    format:THREE.RGBAFormat, type:THREE.UnsignedByteType
+  });
+}
+
+// ─── Shaders ──────────────────────────────────────────────────────────────────
+const VERT = /* glsl */`
+  varying vec2 vUv;
+  void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.); }
+`;
+
+const BLIT_FRAG = /* glsl */`
+  varying vec2 vUv;
+  uniform sampler2D u_src;
+  void main(){ gl_FragColor=texture2D(u_src,vUv); }
+`;
+
+const blitMat = new THREE.ShaderMaterial({vertexShader:VERT,fragmentShader:BLIT_FRAG,uniforms:{u_src:{value:vidTex}},depthTest:false,depthWrite:false});
+const blitScene = new THREE.Scene();
+blitScene.add(new THREE.Mesh(geo.clone(),blitMat));
+
+const FRAG = /* glsl */`
+precision highp float;
+precision highp sampler2D;
+varying vec2 vUv;
+
+uniform float u_mode;     // 0=Luma, 1=Motion
+uniform float u_cols;
+uniform float u_rows;
+uniform float u_con;      // contrast
+uniform float u_bri;      // brightness
+uniform float u_dth;      // dither strength
+uniform float u_inv;      // invert
+uniform float u_flip;     // mirror x-axis
+uniform vec2  u_va;       // video aspect correction
+
+uniform sampler2D u_vid;
+uniform sampler2D u_prev; // Previous frame for motion detection
+uniform sampler2D u_matrix;
+
+// Aspect-corrected + conditionally-mirrored video UV
+vec2 vu(vec2 uv){
+  vec2 v = uv; 
+  if (u_flip > 0.5) v.x = 1.0 - v.x;
+  v = (v - 0.5) * u_va + 0.5;
+  return clamp(v, 0.0, 1.0);
+}
+
+// Simple 4x4 Ordered Dither Matrix (Bayer)
+float bayer4x4(vec2 p) {
+    vec2 p4 = floor(mod(p, 4.0));
+    float x = p4.x;
+    float y = p4.y;
+    float m = 0.0;
+    if (y==0.0) {
+      if (x==0.0) m=0.0; else if (x==1.0) m=8.0; else if (x==2.0) m=2.0; else m=10.0;
+    } else if (y==1.0) {
+      if (x==0.0) m=12.0; else if (x==1.0) m=4.0; else if (x==2.0) m=14.0; else m=6.0;
+    } else if (y==2.0) {
+      if (x==0.0) m=3.0; else if (x==1.0) m=11.0; else if (x==2.0) m=1.0; else m=9.0;
+    } else {
+      if (x==0.0) m=15.0; else if (x==1.0) m=7.0; else if (x==2.0) m=13.0; else m=5.0;
+    }
+    return m / 16.0;
+}
+
+void main(){
+  vec2 uv = vUv;
+  
+  // Sample 2D canvas exactly at 1:1. 
+  vec3 matrix_color = texture2D(u_matrix, uv).rgb;
+  
+  // Calculate specific cell grid indices
+  vec2 cell = floor(uv * vec2(u_cols, u_rows));
+  
+  // Pin video UV sampling to the centre of the exact grid cell
+  vec2 cellUV = cell / vec2(u_cols, u_rows) + (0.5 / vec2(u_cols, u_rows));
+  
+  // Sample Video at pixelated centre location
+  vec4 vidCol = texture2D(u_vid, vu(cellUV));
+  
+  float signal;
+  if (u_mode > 0.5) {
+      // MOTION
+      vec4 prvCol = texture2D(u_prev, vu(cellUV));
+      signal = length(vidCol.rgb - prvCol.rgb) * 2.8; // Scale up the difference slightly
+  } else {
+      // LUMA
+      signal = dot(vidCol.rgb, vec3(0.2126, 0.7152, 0.0722));
+  }
+  
+  // Apply GUI adjustments
+  signal = (signal - 0.5) * u_con + 0.5 + u_bri;
+  
+  // Get dither threshold for this block
+  float dither = bayer4x4(cell);
+  dither = mix(0.5, dither, u_dth); // apply GUI dither strength
+  
+  // Final binary cutoff for ASCII pixelation
+  float showAscii = step(dither, signal);
+  
+  if (u_inv > 0.5) showAscii = 1.0 - showAscii;
+  
+  gl_FragColor = vec4(matrix_color * showAscii, 1.0);
+}
+`;
+
+const U = {
+  u_mode: {value:S.mode},
+  u_cols: {value:cols},
+  u_rows: {value:rows},
+  u_con:  {value:S.contrast},
+  u_bri:  {value:S.brightness},
+  u_dth:  {value:S.ditherStrength},
+  u_inv:  {value:0},
+  u_flip: {value:1},
+  u_va:   {value:new THREE.Vector2(1,1)},
+  u_vid:  {value:vidTex},
+  u_prev: {value:null},
+  u_matrix: {value:mTex},
+};
+
+const mat  = new THREE.ShaderMaterial({vertexShader:VERT,fragmentShader:FRAG,uniforms:U,depthTest:false,depthWrite:false});
+const mesh = new THREE.Mesh(geo,mat);
+scene.add(mesh);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,cam));
+composer.addPass(new OutputPass());
+
+// ─── Resize ───────────────────────────────────────────────────────────────────
+function resize(){
+  W=window.innerWidth; H=window.innerHeight;
+  renderer.setSize(W,H); composer.setSize(W,H);
+  initRainCanvas();
+  U.u_cols.value = cols;
+  U.u_rows.value = rows;
+  aspect();
+  
+  if(rtA) rtA.dispose(); 
+  if(rtB) rtB.dispose();
+  rtA=mkRT(W,H); rtB=mkRT(W,H);
+  U.u_prev.value=rtA.texture;
+
+  $('hr').textContent=`RES: ${W}×${H}`;
+}
+
+function aspect(){
+  const sa = W / H;
+  const va = vW / vH;
+  let ax = 1.0, ay = 1.0;
+  if (sa > va) {
+    ay = va / sa;   
+  } else {
+    ax = sa / va;   
+  }
+  U.u_va.value.set(ax, ay);
+}
+window.addEventListener('resize',resize);
+
+// ─── Recording ────────────────────────────────────────────────────────────────
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+let recController = null;
+// Dedicated offscreen buffer precisely for 1080p width mapping
+const recOutCv = document.createElement('canvas'); 
+const recOutCtx = recOutCv.getContext('2d', { alpha: false });
+
+function toggleRecording() {
+  if (!isRecording) {
+    recordedChunks = [];
+    
+    // Force canvas to 1080p width to guarantee optimized algorithmic rendering scale
+    const recW = 1080;
+    const recH = Math.round(1080 * (H / W));
+    // MP4 encoders require even dimensions
+    recOutCv.width = recW;
+    recOutCv.height = recH % 2 !== 0 ? recH + 1 : recH;
+
+    const stream = recOutCv.captureStream(60);
+    
+    // Explicit MP4 codec configuration targeting high-contrast vectors
+    let options = { mimeType: 'video/mp4; codecs=avc1', videoBitsPerSecond: 4000000 };
+    let ext = 'mp4';
+    try {
+      mediaRecorder = new MediaRecorder(stream, options);
+    } catch (e) {
+      console.warn("MP4/H.264 not supported natively, falling back to WebM/VP9.", e);
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9', videoBitsPerSecond: 2500000 });
+      ext = 'webm';
+    }
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `CyberDither_1080p_${Date.now()}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+      $('hr').textContent = `RES: ${W}×${H} - SAVED`;
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    if (recController) recController.name("STOP & DOWNLOAD MP4");
+    $('hr').textContent = `RES: ${W}×${H} - 🔴 RECORDING 1080p`;
+  } else {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    isRecording = false;
+    if (recController) recController.name("START 1080P RECORD");
+  }
+}
+
+// ─── GUI ──────────────────────────────────────────────────────────────────────
+function buildGUI(){
+  const gui=new GUI({title:'// SYSTEM.CTRL'});
+  const gs={
+    'Mode': S.mode === 0 ? 'Luma' : 'Motion',
+    'Flip Camera': flipCamera,
+    'Text Source': S.charSet,
+    'Custom Text': S.customText,
+    'Text Color': S.textColor,
+    'Grid Density':S.density,
+    'Update Cycle':S.cycleSpeed,
+    'Contrast':S.contrast,
+    'Brightness':S.brightness,
+    'Dither Pattern':S.ditherStrength,
+    'Invert View':S.invert,
+    'Toggle Record': toggleRecording,
+  };
+
+  const rf=gui.addFolder('EXPORT').open();
+  recController = rf.add(gs,'Toggle Record').name("START 1080P RECORD");
+
+  const tf=gui.addFolder('TYPOGRAPHY').open();
+  tf.add(gs,'Text Source',['Binary','Hexadecimal','Custom']).onChange(v=>{S.charSet=v; initRainCanvas();});
+  tf.add(gs,'Custom Text').onChange(v=>{S.customText=v; if(S.charSet==='Custom') initRainCanvas();});
+  tf.addColor(gs,'Text Color').onChange(v=>{S.textColor=v; initRainCanvas();});
+
+  const gf=gui.addFolder('GRID').open();
+  gf.add(gs,'Grid Density',20,250,1).onChange(v=>{S.density=v; initRainCanvas(); U.u_cols.value=cols; U.u_rows.value=rows;});
+  gf.add(gs,'Update Cycle',0,1,.01).onChange(v=>S.cycleSpeed=v);
+
+  const cf=gui.addFolder('FILTER TARGET').open();
+  cf.add(gs,'Mode',['Luma','Motion']).onChange(v=>{S.mode = v==='Luma'?0:1; U.u_mode.value=S.mode; $('hm').textContent=`MODE: ${v.toUpperCase()}`;});
+  cf.add(gs,'Flip Camera');
+  cf.add(gs,'Contrast',0.1,4,.1).onChange(v=>U.u_con.value=v);
+  cf.add(gs,'Brightness',-1,1,.05).onChange(v=>U.u_bri.value=v);
+  cf.add(gs,'Dither Pattern',0,5,.1).onChange(v=>U.u_dth.value=v);
+  cf.add(gs,'Invert View').onChange(v=>U.u_inv.value=v?1:0);
+}
+
+// ─── FPS ─────────────────────────────────────────────────────────────────────
+const fps=[];
+function tickFPS(dt){
+  fps.push(1/Math.max(dt,.001));
+  if(fps.length>40)fps.shift();
+  $('hf').textContent=`FPS: ${(fps.reduce((a,b)=>a+b)/fps.length).toFixed(0)}`;
+}
+
+// ─── Render loop ──────────────────────────────────────────────────────────────
+const clk=new THREE.Clock();
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=clk.getDelta();
+  tickFPS(dt);
+
+  updateRainLogic(now);
+  mTex.needsUpdate = true;
+
+  if(vReady) {
+    vidTex.needsUpdate=true;
+    // Ping pong buffer updates for motion mode
+    if(rtA && rtB){
+      const wrt=pp?rtB:rtA, rrt=pp?rtA:rtB;
+      blitMat.uniforms.u_src.value=vidTex;
+      renderer.setRenderTarget(wrt);
+      renderer.render(blitScene,cam);
+      renderer.setRenderTarget(null);
+      U.u_prev.value=rrt.texture;
+      pp=!pp;
+    }
+  }
+  composer.render();
+  if (isRecording) {
+    // Disable bilinear interpolation to absolutely guarantee pure vector-sharp edges when scaling to 1080p
+    recOutCtx.imageSmoothingEnabled = false;
+    recOutCtx.drawImage(canvas, 0, 0, recOutCv.width, recOutCv.height);
+  }
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+async function boot(){
+  sp(0,'WAKING TERMINAL...');
+  initRainCanvas();
+  await initCam();
+  sp(75,'BOOTING DITHER API...');
+  resize();
+  await new Promise(r=>setTimeout(r,150));
+  sp(90,'BUILDING INTERFACE...');
+  buildGUI();
+  await new Promise(r=>setTimeout(r,100));
+  sp(100,'READY');
+  $('hr').textContent=`RES: ${W}×${H}`;
+  const ls=$('ls'); ls.classList.add('gone'); setTimeout(()=>ls.remove(),800);
+  clk.start();
+  requestAnimationFrame(loop);
+}
+
+boot();
+</script>
+</body>
+</html>
