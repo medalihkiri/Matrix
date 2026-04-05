@@ -65,6 +65,11 @@
       pointer-events:none; z-index:200; line-height:2;
     }
     #hud .m { color:#00ff41; font-size:12px; text-shadow:0 0 8px #00ff41; }
+
+    #actions { position:fixed; bottom:12px; right:12px; z-index:9000; display:flex; gap:10px; }
+    .action-btn { background:rgba(0,5,0,0.8); border:1px solid rgba(0,255,65,0.4); color:#00ff41; font-family:'Courier New',monospace; font-size:11px; padding:8px 12px; cursor:pointer; text-transform:uppercase; backdrop-filter:blur(4px); transition:all 0.2s; }
+    .action-btn:hover { background:rgba(0,255,65,0.2); border-color:#00ff41; }
+    .action-btn.active { background:red; border-color:red; color:#fff; }
   </style>
 </head>
 <body>
@@ -90,6 +95,11 @@
   <div id="hr">RES: --</div>
 </div>
 
+<div id="actions">
+  <button class="action-btn" id="btn-flip">FLIP CAMERA</button>
+  <button class="action-btn" id="btn-rec">RECORD 1080P</button>
+</div>
+
 <!-- ═════════════════════════════════════════════════════════════════════════ -->
 <script type="importmap">
 {
@@ -109,7 +119,7 @@ import GUI from 'https://cdn.jsdelivr.net/npm/lil-gui@0.19/+esm';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const $  = id => document.getElementById(id);
-const sp = (p,m) => { $('lb').style.width=p+'%'; $('lm').textContent=m; };
+const sp = (p,m) => { if($('lb'))$('lb').style.width=p+'%'; if($('lm'))$('lm').textContent=m; };
 
 // ─── State ───────────────────────────────────────────────────────────────────
 const S = {
@@ -471,14 +481,16 @@ function toggleRecording() {
 
     mediaRecorder.start();
     isRecording = true;
-    if (recController) recController.name("STOP & DOWNLOAD MP4");
+    $('btn-rec').textContent = "STOP RECORDING";
+    $('btn-rec').classList.add('active');
     $('hr').textContent = `RES: ${W}×${H} - 🔴 RECORDING 1080p`;
   } else {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
     }
     isRecording = false;
-    if (recController) recController.name("START 1080P RECORD");
+    $('btn-rec').textContent = "RECORD 1080P";
+    $('btn-rec').classList.remove('active');
   }
 }
 
@@ -487,7 +499,6 @@ function buildGUI(){
   const gui=new GUI({title:'// SYSTEM.CTRL'});
   const gs={
     'Mode': S.mode === 0 ? 'Luma' : 'Motion',
-    'Flip Camera': flipCamera,
     'Text Source': S.charSet,
     'Custom Text': S.customText,
     'Text Color': S.textColor,
@@ -497,11 +508,7 @@ function buildGUI(){
     'Brightness':S.brightness,
     'Dither Pattern':S.ditherStrength,
     'Invert View':S.invert,
-    'Toggle Record': toggleRecording,
   };
-
-  const rf=gui.addFolder('EXPORT').open();
-  recController = rf.add(gs,'Toggle Record').name("START 1080P RECORD");
 
   const tf=gui.addFolder('TYPOGRAPHY').open();
   tf.add(gs,'Text Source',['Binary','Hexadecimal','Custom']).onChange(v=>{S.charSet=v; initRainCanvas();});
@@ -514,7 +521,6 @@ function buildGUI(){
 
   const cf=gui.addFolder('FILTER TARGET').open();
   cf.add(gs,'Mode',['Luma','Motion']).onChange(v=>{S.mode = v==='Luma'?0:1; U.u_mode.value=S.mode; $('hm').textContent=`MODE: ${v.toUpperCase()}`;});
-  cf.add(gs,'Flip Camera');
   cf.add(gs,'Contrast',0.1,4,.1).onChange(v=>U.u_con.value=v);
   cf.add(gs,'Brightness',-1,1,.05).onChange(v=>U.u_bri.value=v);
   cf.add(gs,'Dither Pattern',0,5,.1).onChange(v=>U.u_dth.value=v);
@@ -571,6 +577,10 @@ async function boot(){
   sp(90,'BUILDING INTERFACE...');
   buildGUI();
   await new Promise(r=>setTimeout(r,100));
+  
+  $('btn-flip').addEventListener('click', flipCamera);
+  $('btn-rec').addEventListener('click', toggleRecording);
+  
   sp(100,'READY');
   $('hr').textContent=`RES: ${W}×${H}`;
   const ls=$('ls'); ls.classList.add('gone'); setTimeout(()=>ls.remove(),800);
